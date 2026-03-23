@@ -1,0 +1,236 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MILITARY RADIO PRO - V5</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: 'Courier New', Courier, monospace; background-color: #1a1a1a; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; }
+        
+        .device { 
+            background: #2b3a2a; width: 300px; padding: 25px; 
+            border-radius: 40px; border: 6px solid #1e2a1e; 
+            text-align: center; position: relative; 
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+        }
+
+        .antenna { width: 15px; height: 60px; background: #111; position: absolute; top: -55px; right: 40px; border-radius: 5px; border-top: 4px solid #444; }
+        
+        /* الشاشة الرقمية مع المؤشر */
+        .screen { 
+            background: #1a1d1a; color: #00ff41; 
+            padding: 15px; border-radius: 10px; 
+            margin-bottom: 20px; border: 3px inset #000; 
+            position: relative; overflow: hidden;
+            box-shadow: inset 0 0 15px rgba(0, 255, 65, 0.1);
+        }
+
+        .freq-val { font-size: 1.6rem; font-weight: bold; margin-bottom: 5px; letter-spacing: 1px; }
+        
+        /* مؤشر الصوت Visualizer */
+        canvas { width: 100%; height: 35px; background: rgba(0, 255, 65, 0.02); border-radius: 4px; }
+
+        /* زر التحدث PTT */
+        .ptt-btn { 
+            width: 100%; height: 100px; 
+            background: linear-gradient(#d62828, #9b2226); 
+            border: none; border-radius: 20px; 
+            color: white; font-size: 1.4rem; font-weight: bold; 
+            cursor: pointer; margin-bottom: 20px; 
+            box-shadow: 0 6px #661114; 
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+        .ptt-btn:active { transform: translateY(4px); box-shadow: 0 1px #661114; background: #ff0000; }
+        
+        .controls { background: rgba(0,0,0,0.4); padding: 15px; border-radius: 15px; display: flex; flex-direction: column; gap: 10px; }
+        
+        input { 
+            background: #000; border: 1px solid #00ff41; 
+            color: #00ff41; padding: 12px; border-radius: 6px; 
+            text-align: center; font-size: 1.3rem; outline: none;
+        }
+
+        .btn-sync { 
+            background: #457b9d; color: white; border: none; 
+            padding: 12px; border-radius: 6px; 
+            font-weight: bold; cursor: pointer; text-transform: uppercase;
+        }
+        .btn-sync:active { background: #1d3557; }
+
+        .status { font-size: 0.75rem; margin-top: 8px; color: #00ff41; font-weight: bold; height: 15px; }
+    </style>
+</head>
+<body>
+
+    <div class="device">
+        <div class="antenna"></div>
+        <div class="screen">
+            <div class="freq-val" id="freqDisp">000.00 MHz</div>
+            <canvas id="visualizer"></canvas>
+            <div id="status" class="status">SIGNAL: OFFLINE</div>
+        </div>
+
+        <button id="pttBtn" class="ptt-btn">PUSH TO TALK</button>
+
+        <div class="controls">
+            <input type="number" id="freqInput" placeholder="ENTER FREQ">
+            <button class="btn-sync" onclick="initAndStart()">SYNC CHANNEL</button>
+        </div>
+    </div>
+
+    <script>
+        let peer = null;
+        let myStream = null;
+        let audioCtx = null;
+        let analyser = null;
+        let dataArray = null;
+        let canvasCtx = null;
+        let canvas = null;
+
+        const pttBtn = document.getElementById('pttBtn');
+        const status = document.getElementById('status');
+        const freqDisp = document.getElementById('freqDisp');
+
+        // 1. إعداد المحرك الصوتي والمؤشر البصري
+        function setupVisualizer(stream) {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(stream);
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 64;
+            source.connect(analyser);
+            
+            canvas = document.getElementById('visualizer');
+            canvasCtx = canvas.getContext('2d');
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+            draw();
+        }
+
+        function draw() {
+            requestAnimationFrame(draw);
+            analyser.getByteFrequencyData(dataArray);
+            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+            canvasCtx.fillStyle = '#00ff41';
+            const barWidth = (canvas.width / dataArray.length) * 2;
+            let x = 0;
+            for(let i = 0; i < dataArray.length; i++) {
+                const barHeight = dataArray[i] / 3;
+                canvasCtx.fillRect(x, canvas.height - barHeight, barWidth - 1, barHeight);
+                x += barWidth;
+            }
+        }
+
+        // 2. نغمة Roger Beep (نهاية الكلام)
+        function playRogerBeep() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(1000, audioCtx.currentTime); 
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.15);
+        }
+
+        // 3. بدء التشغيل وإعادة التوليف
+        async function initAndStart() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') await audioCtx.resume();
+            
+            const freq = document.getElementById('freqInput').value;
+            if(!freq) return alert("ادخل رقم الموجة");
+
+            // تنظيف أي اتصال قديم تماماً لحل مشكلة الخطأ في التوليف
+            if (peer) {
+                status.innerText = "RESETTING...";
+                peer.destroy();
+                peer = null;
+            }
+
+            startRadio(freq);
+        }
+
+        // تفعيل المايك عند فتح الصفحة
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            myStream = stream;
+            myStream.getAudioTracks()[0].enabled = false;
+        }).catch(() => alert("يجب السماح بالمايكروفون للتشغيل"));
+
+        function startRadio(freq) {
+            const myId = "mil-pro-" + freq;
+            peer = new Peer(myId);
+
+            peer.on('open', (id) => {
+                freqDisp.innerText = parseFloat(freq).toFixed(2) + " MHz";
+                status.innerText = "STATUS: LISTENING / READY";
+                setupVisualizer(myStream); // تشغيل المؤشر البصري
+                
+                // محاولة ربط تلقائي
+                const call = peer.call(myId, myStream); 
+                if(call) handleCall(call);
+            });
+
+            peer.on('call', (call) => {
+                call.answer(myStream);
+                handleCall(call);
+            });
+
+            peer.on('error', (err) => {
+                if(err.type === 'unavailable-id') {
+                    // إذا كانت القناة محجوزة، اتصل كطرف ثاني
+                    connectToOther(myId);
+                } else {
+                    status.innerText = "ERROR: TRY SYNC AGAIN";
+                }
+            });
+        }
+
+        function connectToOther(targetId) {
+            const tempPeer = new Peer();
+            tempPeer.on('open', () => {
+                const call = tempPeer.call(targetId, myStream);
+                if(call) handleCall(call);
+            });
+        }
+
+        function handleCall(call) {
+            status.innerText = "STATUS: ONLINE / RX";
+            call.on('stream', (remoteStream) => {
+                const audio = new Audio();
+                audio.srcObject = remoteStream;
+                audio.play();
+                // ربط صوت الطرف الآخر بالمؤشر البصري
+                const source = audioCtx.createMediaStreamSource(remoteStream);
+                source.connect(analyser);
+            });
+        }
+
+        // 4. التحكم في أزرار الضغط للتحدث
+        const startTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = true;
+                status.innerText = "STATUS: TRANSMITTING (TX)";
+            }
+        };
+
+        const stopTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = false;
+                status.innerText = "STATUS: LISTENING / READY";
+                playRogerBeep(); // تشغيل نغمة النهاية
+            }
+        };
+
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('mouseup', stopTalking);
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+
+    </script>
+</body>
+</html>
