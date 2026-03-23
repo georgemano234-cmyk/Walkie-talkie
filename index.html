@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لاسلكي التردد الرقمي</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: 'Courier New', Courier, monospace; background-color: #2c3e50; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .walkie-talkie { background: #1a1a1a; width: 280px; padding: 30px; border-radius: 40px; border: 8px solid #333; box-shadow: 0 20px 50px rgba(0,0,0,0.8); position: relative; }
+        .antenna { width: 25px; height: 100px; background: #1a1a1a; position: absolute; top: -100px; right: 40px; border-radius: 5px 5px 0 0; }
+        .digital-screen { background: #92b43a; color: #1a2a01; padding: 15px; border-radius: 10px; border: 4px inset #556b2f; margin-bottom: 20px; text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.5); }
+        .freq-display { font-size: 2rem; font-weight: bold; letter-spacing: 2px; }
+        .label { font-size: 0.7rem; text-transform: uppercase; margin-bottom: 5px; opacity: 0.8; }
+        .ptt-container { margin-bottom: 20px; }
+        .ptt-button { width: 100%; height: 80px; background: linear-gradient(#e63946, #9b2226); border: none; border-radius: 15px; color: white; font-size: 1.2rem; font-weight: bold; cursor: pointer; box-shadow: 0 5px #661114; transition: 0.1s; }
+        .ptt-button:active { box-shadow: 0 0 #661114; transform: translateY(5px); }
+        .controls { background: #222; padding: 15px; border-radius: 15px; display: flex; flex-direction: column; gap: 10px; }
+        input { background: #333; border: 1px solid #444; color: #92b43a; padding: 10px; border-radius: 5px; text-align: center; font-size: 1.1rem; font-weight: bold; }
+        .btn-sync { background: #f1faee; color: #1d3557; border: none; padding: 10px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        .status-dot { width: 10px; height: 10px; background: #555; border-radius: 50%; display: inline-block; margin-left: 5px; }
+        .active-dot { background: #f00; box-shadow: 0 0 10px #f00; }
+    </style>
+</head>
+<body>
+
+    <div class="walkie-talkie">
+        <div class="antenna"></div>
+        
+        <div class="digital-screen">
+            <div class="label">Digital Frequency (MHz)</div>
+            <div class="freq-display" id="freqShow">000.00</div>
+            <div id="unitStatus" style="font-size: 0.8rem; margin-top: 5px;">OFFLINE</div>
+        </div>
+
+        <div class="ptt-container">
+            <button id="pttBtn" class="ptt-button">PUSH TO TALK</button>
+        </div>
+
+        <div class="controls">
+            <div class="label" style="text-align: center;">ضبط الموجة</div>
+            <input type="number" id="freqInput" step="0.01" placeholder="مثلاً: 446.00">
+            <button class="btn-sync" onclick="syncFrequency()">توليف الموجة (SYNC)</button>
+        </div>
+        
+        <p style="font-size: 0.6rem; color: #666; margin-top: 15px;">* ادخل نفس الموجة على الجهازين للتحدث</p>
+    </div>
+
+    <script>
+        let peer;
+        let myStream;
+        const freqShow = document.getElementById('freqShow');
+        const unitStatus = document.getElementById('unitStatus');
+        const pttBtn = document.getElementById('pttBtn');
+
+        // تجهيز الميكروفون
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            myStream = stream;
+            myStream.getAudioTracks()[0].enabled = false;
+        });
+
+        function syncFrequency() {
+            const freq = document.getElementById('freqInput').value;
+            if(!freq) return alert("ادخل رقم الموجة أولاً");
+
+            // تحويل رقم الموجة إلى معرف نصي (مثلاً الموجة 446 تصبح ID: freq-446)
+            const peerId = "radio-freq-" + freq.replace('.', '-');
+
+            if(peer) peer.destroy(); // إغلاق أي اتصال قديم
+
+            peer = new Peer(peerId);
+
+            peer.on('open', (id) => {
+                freqShow.innerText = parseFloat(freq).toFixed(2);
+                unitStatus.innerText = "ONLINE / LISTENING";
+                unitStatus.style.color = "#1a2a01";
+                console.log("Connected to Frequency: " + id);
+            });
+
+            // استقبال أي شخص يدخل على نفس الموجة
+            peer.on('call', (call) => {
+                call.answer(myStream);
+                call.on('stream', (remoteStream) => {
+                    const audio = new Audio();
+                    audio.srcObject = remoteStream;
+                    audio.play();
+                });
+            });
+
+            // محاولة الاتصال التلقائي بأي شخص موجود فعلياً على نفس الموجة
+            // ملاحظة: في PeerJS الاتصال يحتاج طرف يبدأ، هنا سنحاول الاتصال دائماً عند تغيير الموجة
+            setTimeout(() => {
+                // محاولة الاتصال بموجة "افتراضية" تسبقنا، أو ننتظر اتصال الآخرين
+                // للتبسيط في هذا الكود: الشخص الثاني هو من يقوم بالطلب
+                connectToFrequency(peerId);
+            }, 1000);
+        }
+
+        function connectToFrequency(targetId) {
+            // هذه الوظيفة تحاول ربط الأجهزة الموجودة على نفس التردد
+            const call = peer.call(targetId, myStream);
+            if(call) {
+                call.on('stream', (remoteStream) => {
+                    const audio = new Audio();
+                    audio.srcObject = remoteStream;
+                    audio.play();
+                });
+            }
+        }
+
+        // زر PTT
+        const startTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = true;
+                unitStatus.innerText = "TX (TRANSMITTING)";
+                unitStatus.style.color = "red";
+            }
+        };
+
+        const stopTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = false;
+                unitStatus.innerText = "ONLINE / LISTENING";
+                unitStatus.style.color = "#1a2a01";
+            }
+        };
+
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('mouseup', stopTalking);
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+
+    </script>
+</body>
+</html>
