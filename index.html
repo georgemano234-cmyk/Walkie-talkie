@@ -1,0 +1,128 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لاسلكي التردد الرقمي - برو</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #1a1a1a; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .device { background: #222; width: 300px; padding: 25px; border-radius: 40px; border: 5px solid #444; text-align: center; }
+        .screen { background: #92b43a; color: #1a2a01; padding: 15px; border-radius: 10px; font-family: monospace; margin-bottom: 20px; font-weight: bold; border: 3px inset #556b2f; }
+        .ptt-btn { width: 100%; height: 100px; background: #e63946; border: none; border-radius: 20px; color: white; font-size: 1.5rem; font-weight: bold; cursor: pointer; margin-bottom: 20px; box-shadow: 0 5px #800; }
+        .ptt-btn:active { transform: translateY(4px); box-shadow: 0 1px #800; }
+        .ptt-btn.transmitting { background: #ff0000; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.7; } }
+        input { width: 80%; padding: 10px; margin-bottom: 10px; border-radius: 5px; border: none; text-align: center; font-size: 1.2rem; }
+        .btn-sync { background: #457b9d; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; width: 85%; }
+    </style>
+</head>
+<body>
+
+    <div class="device">
+        <div class="screen">
+            <div id="freqDisp">000.00 MHz</div>
+            <div id="status" style="font-size: 0.8rem; margin-top: 5px;">OFFLINE</div>
+        </div>
+
+        <button id="pttBtn" class="ptt-btn">PUSH TO TALK</button>
+
+        <input type="number" id="freqInput" placeholder="رقم التردد (مثلاً 500)">
+        <button class="btn-sync" onclick="startRadio()">توليف (SYNC)</button>
+        
+        <p style="font-size: 0.7rem; color: #888; margin-top: 15px;">يجب الضغط على SYNC في الجهازين بنفس الرقم</p>
+    </div>
+
+    <script>
+        let peer;
+        let myStream;
+        const pttBtn = document.getElementById('pttBtn');
+        const status = document.getElementById('status');
+        const freqDisp = document.getElementById('freqDisp');
+
+        // تجهيز المايك
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            myStream = stream;
+            myStream.getAudioTracks()[0].enabled = false;
+        }).catch(err => alert("برجاء السماح بالوصول للميكروفون"));
+
+        function startRadio() {
+            const freq = document.getElementById('freqInput').value;
+            if(!freq) return alert("ادخل التردد");
+
+            // المعرف هيكون هو رقم التردد
+            const myId = "freq-" + freq;
+            
+            if(peer) peer.destroy();
+            
+            // إنشاء الـ Peer بالتردد المحدد
+            peer = new Peer(myId);
+
+            peer.on('open', (id) => {
+                freqDisp.innerText = freq + ".00 MHz";
+                status.innerText = "جاري البحث عن إشارة...";
+                
+                // محاولة الاتصال بالتردد (لو حد تاني فاتحه قبلك)
+                const call = peer.call(myId, myStream); 
+                if(call) handleCall(call);
+            });
+
+            // استقبال الاتصال
+            peer.on('call', (call) => {
+                call.answer(myStream);
+                handleCall(call);
+            });
+
+            peer.on('error', (err) => {
+                if(err.type === 'unavailable-id') {
+                    // إذا كان التردد محجوز (يعني الشخص التاني فتحه قبلك)
+                    // نقوم بالاتصال به مباشرة
+                    connectToOther(myId);
+                }
+            });
+        }
+
+        function connectToOther(targetId) {
+            // بنعمل Peer مؤقت عشان نتصل بالتردد الأساسي
+            const tempPeer = new Peer();
+            tempPeer.on('open', () => {
+                const call = tempPeer.call(targetId, myStream);
+                handleCall(call);
+            });
+        }
+
+        function handleCall(call) {
+            status.innerText = "متصل بالتردد (ONLINE)";
+            call.on('stream', (remoteStream) => {
+                const audio = new Audio();
+                audio.srcObject = remoteStream;
+                audio.play();
+            });
+        }
+
+        // زر التحدث
+        const startTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = true;
+                pttBtn.classList.add('transmitting');
+                status.innerText = "جاري الإرسال (TX)...";
+            }
+        };
+
+        const stopTalking = () => {
+            if (myStream && peer) {
+                myStream.getAudioTracks()[0].enabled = false;
+                pttBtn.classList.remove('transmitting');
+                status.innerText = "متصل بالتردد (ONLINE)";
+            }
+        };
+
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('mouseup', stopTalking);
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+
+    </script>
+</body>
+</html>
